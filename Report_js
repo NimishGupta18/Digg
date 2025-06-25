@@ -1,0 +1,165 @@
+/**
+ * Netlify Serverless Function: get-report.js
+ *
+ * This function acts as a secure "middleman" between your website and the Google AI API.
+ * 1. It receives a company name from the website.
+ * 2. It securely accesses your API key AND system prompt, which are stored as environment variables in Netlify.
+ * 3. It calls the Google AI API with the prompt and the secure key.
+ * 4. It returns the AI's response back to your website.
+ *
+ * This prevents your API key and proprietary prompt from being exposed in the browser.
+ */
+
+// The expected JSON schema for the AI's response.
+const fullResponseSchema = { 
+    type: "OBJECT",
+    properties: {
+        "company_name_researched": { "type": "STRING", "description": "The name of the company that was researched." },
+        "executive_summary": { "type": "STRING", "description": "Approx 150-250 words covering mission, strengths/challenges, culture, performance/direction, first impression." },
+        "corporate_fundamentals": {
+            "type": "OBJECT",
+            "properties": {
+                "company_overview": { "type": "STRING", "description": "Industry, sector, business model, products/services, customer segments." },
+                "size_scale": { "type": "STRING", "description": "Employees, revenue, geographic footprint." },
+                "market_position": { "type": "STRING", "description": "Competitors, differentiators, market standing." },
+                "ownership_structure": { "type": "STRING", "description": "Public/private, parent, subsidiaries." }
+            },
+        },
+        "strategic_direction_outlook": {
+            "type": "OBJECT",
+            "properties": {
+                "stated_mission_vision": { "type": "STRING" },
+                "key_strategic_priorities": { "type": "STRING" },
+                "recent_major_initiatives_investments": { "type": "STRING" },
+                "leadership_outlook": { "type": "STRING" }
+            },
+        },
+        "organizational_culture_work_environment": {
+            "type": "OBJECT",
+            "properties": {
+                "reported_cultural_attributes": { "type": "STRING" },
+                "employee_value_proposition": { "type": "STRING" },
+                "diversity_equity_inclusion": { "type": "STRING" },
+                "employee_sentiment_summary": { "type": "STRING" }
+            },
+        },
+        "talent_landscape_hiring": {
+            "type": "OBJECT",
+            "properties": {
+                "skills_roles_in_demand": { "type": "STRING" },
+                "hiring_process_insights": { "type": "STRING" },
+                "learning_development_opportunities": { "type": "STRING" },
+                "employee_retention_alumni": { "type": "STRING" }
+            },
+        },
+        "risk_assessment_considerations": {
+            "type": "OBJECT",
+            "properties": {
+                "industry_market_risks": { "type": "STRING" },
+                "company_specific_challenges": { "type": "STRING" },
+                "cultural_red_flags": { "type": "STRING" }
+            },
+        },
+        "candidate_alignment_interview_prep": {
+            "type": "OBJECT",
+            "properties": {
+                "key_company_values_competencies_to_highlight": { "type": "STRING" },
+                "potential_questions_for_candidate_to_ask": { "type": "STRING" },
+                "connecting_candidate_profile_generic": { "type": "STRING" }
+            },
+        },
+        "recent_news_developments": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "news_item_summary": { "type": "STRING" },
+                    "source_link": { "type": "STRING" }
+                }
+            }
+        },
+        "information_integrity_statement": {
+            "type": "OBJECT",
+            "properties": {
+                "statement_text": { "type": "STRING" },
+                "source_types_used": { "type": "STRING" }
+            }
+        }
+    }
+};
+
+
+exports.handler = async function(event, context) {
+    // Only allow POST requests
+    if (event.httpMethod !== 'POST') {
+        return { statusCode: 405, body: 'Method Not Allowed' };
+    }
+
+    try {
+        // SECURELY get the API key and the system prompt from Netlify's environment variables
+        const apiKey = process.env.GEMINI_API_KEY;
+        const ciraSystemPrompt = process.env.CIRA_SYSTEM_PROMPT;
+
+        // Check if both the API key and the prompt are configured
+        if (!apiKey || !ciraSystemPrompt) {
+           return { statusCode: 500, body: JSON.stringify({ error: 'API key or system prompt is not configured on the server.' }) };
+        }
+
+        const { companyName } = JSON.parse(event.body);
+
+        if (!companyName) {
+            return { statusCode: 400, body: JSON.stringify({ error: 'companyName is required' }) };
+        }
+        
+        const userMessage = `Generate a comprehensive intelligence briefing for the company: "${companyName}". Follow the CIRA persona and instructions to provide detailed, well-sourced information in the specified JSON format.`;
+
+        const chatHistory = [
+            { role: "user", parts: [{ text: ciraSystemPrompt }] }, // Use the prompt from the environment variable
+            { role: "model", parts: [{ text: "Acknowledged. I will now provide the company intelligence briefing in the specified JSON format." }] },
+            { role: "user", parts: [{ text: userMessage }] }
+        ];
+
+        const payload = {
+            contents: chatHistory,
+            generationConfig: {
+                responseMimeType: "application/json",
+                responseSchema: fullResponseSchema,
+            },
+        };
+
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+
+        const response = await fetch(apiUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(payload),
+        });
+
+        if (!response.ok) {
+            const errorBody = await response.text();
+            console.error('Gemini API error:', errorBody);
+            return {
+                statusCode: response.status,
+                body: JSON.stringify({ error: `Gemini API request failed: ${response.statusText}` }),
+            };
+        }
+
+        const result = await response.json();
+        
+        // Return the successful response to the frontend
+        return {
+            statusCode: 200,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(result),
+        };
+
+    } catch (error) {
+        console.error('Serverless function error:', error);
+        return {
+            statusCode: 500,
+            body: JSON.stringify({ error: error.message }),
+        };
+    }
+};
